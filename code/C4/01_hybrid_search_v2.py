@@ -42,7 +42,13 @@ class SigLIPEmbeddingFunction:
         # 获取文本编码器的输出维度
         with torch.no_grad():
             dummy_text = ["test"]
-            inputs = self.processor(text=dummy_text, padding="max_length", return_tensors="pt")
+            inputs = self.processor(
+                text=dummy_text, 
+                padding="max_length", 
+                truncation=True, 
+                max_length=64,  
+                return_tensors="pt"
+            )
             outputs = self.model.text_model(**{k: v.to(device) for k, v in inputs.items() if k != 'pixel_values'})
             self.dense_dim = outputs.pooler_output.shape[-1]
         
@@ -71,10 +77,19 @@ class SigLIPEmbeddingFunction:
         dense_vectors = []
         batch_size = 8  # 减小批次大小以节省内存
         
+        max_len = getattr(getattr(self, "processor").tokenizer, "model_max_length", 64) or 64
+        max_len = int(max_len)
+        
         with torch.no_grad():
             for i in range(0, len(texts), batch_size):
                 batch_texts = texts[i:i + batch_size]
-                inputs = self.processor(text=batch_texts, padding="max_length", return_tensors="pt")
+                inputs = self.processor(
+                    text=batch_texts, 
+                    padding="max_length", 
+                    truncation=True,
+                    max_length=max_len,
+                    return_tensors="pt"
+                )
                 inputs = {k: v.to(self.device) for k, v in inputs.items() if k != 'pixel_values'}
                 
                 outputs = self.model.text_model(**inputs)
