@@ -185,7 +185,7 @@ for img_data in tqdm(dataset.images, desc="生成多模态嵌入"):
         "image_path": img_data.path,
         "title": img_data.title,
         "description": img_data.description,
-        "categorfory": img_data.category,
+        "category": img_data.category,
         "location": img_data.location,
         "environment": img_data.environment
     })

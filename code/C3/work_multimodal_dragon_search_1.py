@@ -9,8 +9,11 @@ import numpy as np
 import cv2
 from PIL import Image
 from typing import List, Dict, Any
-from dataclass import dataclass
+from dataclasses import dataclass
 
+# 一个小型多模态（图像+文本）向量检索 Demo:用 Visualized-BGE 把每张“龙类”图片及其文字描述编码成向量，存入 Milvus；然后支持三种查询方式（图+文, 纯文, 纯图），返回相似图片，并生成拼接可视化图
+
+# DragonImage 是每张图片的结构化元信息
 @dataclass
 class DragonImage:
     """龙类图像数据类"""
@@ -22,8 +25,9 @@ class DragonImage:
     location: str
     environment: str
     combat_details: Dict[str, Any] = None
-    secene_info: Dict[str, Any] = None
+    scene_info: Dict[str, Any] = None
 
+# DragonImage 负责加载 JSON (metadata_path 指向 JSON 文件)，确保 img_data['path'] 以 data_dir 开头
 class DragonDataset:
     """龙类图像数据集管理类"""
     def __init__(self, data_dir: str, metadata_path: str):
@@ -69,28 +73,36 @@ class DragonDataset:
 
         return ' '.join(filter(None, parts))
 
+# 编码器
 class Encoder:
     """编码器类，用于将图像和文本编码为向量"""
     def __init__(self, model_name: str, model_path: str):
+        '''
+        用 Visualized-BGE 作为底层多模态编码器，model_name_bge 指文本低模，model_weight 指 Visualized-BGE 的权重
+        '''
         self.model = Visualized_BGE(model_name_bge=model_name, model_weight=model_path)
         self.model.eval()
 
+    # encode_query(...) & encode_multimodal(...)：把输入编码成向量（一般返回形状(1, dim)的张量），最后 tolist()[0] 取出一行向量
+    # 根据传入参数走三种分支
     def encode_query(self, image_path: str = None, text: str = None) -> list[float]:
         """编码查询（支持图像+文本或仅文本）"""
         with torch.no_grad():
             if image_path and text:
                 query_emb = self.model.encode(image=image_path, text=text)
             elif image_path:
-                querb_emb = self.model.encode(image=image_path)
+                query_emb = self.model.encode(image=image_path)
             elif text:
                 query_emb = self.model.encode(text=text)
         
         return query_emb.tolist()[0]
 
+    # 图+文联合编码
     def encode_multimodal(self, image_path: str, text: str) -> list[float]:
         """编码多模态内容（图像+文本）"""
         with torch.no_grad():
             query_emb = self.model.encode(image=image_path, text=text)
+            
         return query_emb.tolist()[0]
     
 def visualizer_results(query_image_path: str, retrieved_results: list, img_height: int = 300, img_width: int = 300, row_count: int = 3) -> np.ndarray:
@@ -195,3 +207,112 @@ for img_data in tqdm(dataset.images, desc='生成多模态嵌入'):
 if data_to_insert:
     result = milvus_client.insert(collection_name = COLLECTION_NAME, data = data_to_insert)
     print(f"成功插入 {result['insert_count']} 条数据。")
+
+# 5. 创建索引
+print(f"\n--> 正在为 '{COLLECTION_NAME}' 创建索引")
+index_params = milvus_client.prepare_index_params()
+index_params.add_index(
+    field_name = "vector",
+    index_type = "HNSW",
+    metric_type = "COSINE",
+    params = {'M': 16, "efConstruction": 256}
+)
+milvus_client.create_index(collection_name = COLLECTION_NAME, index_params=index_params)
+print("成功为向量字段创建 HNSW 索引。")
+milvus_client.load_collection(collection_name = COLLECTION_NAME)
+print("已加载 Collection 到内存中。")
+
+# 6. 执行多模态检索
+print(f"\n--> 正在 '{COLLECTION_NAME}' 中执行多模态检索")
+
+# 示例1：图像+文本查询
+query_image_path = os.path.join(DATA_DIR, "query.png")
+query_text = "悬崖上的巨龙"
+query_vector = encoder.encode_query(image_path = query_image_path, text = query_text)
+
+print(f"\n=== 多模态查询（图像+文本）===")
+print(f"查询图像: {query_image_path}")
+print(f"查询文本: {query_text}")
+
+search_results = milvus_client.search(
+    collection_name = COLLECTION_NAME,
+    data = [query_vector],
+    output_fields = ["img_id", "image_path", "title", "description", "category", "location", "environment"],
+    limit = 6,
+    search_params = {"metric_type": "COSINE", "params": {"ef": 128}}
+)[0]
+
+retrieved_results = []
+print("检索结果:")
+for i, hit in enumerate(search_results):
+    print(f"    Top {i+1}: ID={hit['id']}, 距离={hit['distance']:.4f}")
+    print(f"    标题: {hit['entity']['title']}")
+    print(f"    描述: {hit['entity']['description'][:100]}...")
+    print(f"    类别: {hit['entity']['category']}")
+    print(f"    路径: {hit['entity']['image_path']}")
+    print("-" * 50)
+    retrieved_results.append({
+        'image_path': hit['entity']['image_path'],
+        'distance': hit['distance']
+    })
+
+# 示例2:纯文本查询
+print(f"\n=== 纯文本查询 ===")
+text_query = "悬崖上的巨龙"
+text_query_vector = encoder.encode_query(text = text_query)
+
+print(f"查询文本: {text_query}")
+
+text_search_results = milvus_client.search(
+    collection_name = COLLECTION_NAME,
+    data = [text_query_vector],
+    output_fields = ["img_id", "image_path", "title", "description", "category", "location", "environment"],
+    limit = 3,
+    search_params = {"metric_type": "COSINE", "params": {"ef": 128}}
+)[0]
+
+print("文本检索结果:")
+for i, hit in enumerate(text_search_results):
+    print(f"    Top {i+1}: {hit['entity']['title']} (距离: {hit['distance']:.4f})")
+    print(f"    描述：{hit['entity']['description'][:80]}...")
+
+# 示例3:纯图像查询
+print(f"\n=== 纯图像查询 ===")
+image_query_path = os.path.join(DATA_DIR, "query.png")
+image_query_vector = encoder.encode_query(image_path=image_query_path)
+
+print(f"查询图像: {image_query_path}")
+
+image_query_path = os.path.join(DATA_DIR, 'query.png')
+image_query_vector = encoder.encode_query(image_path=image_query_path)
+
+print(f"查询图像：{image_query_path}")
+
+image_search_results = milvus_client.search(
+    collection_name = COLLECTION_NAME,
+    data = [image_query_vector],
+    output_fields = ["img_id", "image_path", "title", "description", "category", "location", "environment"],
+    limit = 3,
+    search_params = {"metric_type": "COSINE", "params": {"ef": 128}}
+)[0]
+
+print("图像检索结果：")
+for i, hit in enumerate(image_search_results):
+    print(f"    Top {i+1}: {hit['entity']['title']} (距离: {hit['distance']:.4f})")
+    print(f"    类别: {hit['entity']['category']}")
+    print(f"    描述: {hit['entity']['description'][:80]}...")
+    print(f"    路径: {hit['entity']['image_path']}")
+
+# 7. 可视化与清理
+print(f"\n--> 正在可视化结果并清理资源")
+if retrieved_results:
+    panoramic_image = visualizer_results(query_image_path, retrieved_results)
+    combined_image_path = "../../data/C4/multimodal_search.png"
+    cv2.imwrite(combined_image_path, panoramic_image)
+    print(f"结果图像已保存到: {combined_image_path}")
+
+# 8. 清理资源
+milvus_client.release_collection(collection_name=COLLECTION_NAME)
+print(f"已从内存中释放 Collection: '{COLLECTION_NAME}'")
+milvus_client.drop_collection(COLLECTION_NAME)
+print(f"已删除 Collection: '{COLLECTION_NAME}'")

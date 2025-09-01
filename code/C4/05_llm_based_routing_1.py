@@ -5,10 +5,10 @@ from langchain_deepseek import ChatDeepSeek
 from langchain_core.runnables import RunnableBranch
 
 llm = ChatDeepSeek(
-    model="deepseek-chat", 
-    temperature=0, 
-    api_key=os.getenv("DEEPSEEK_API_KEY")
-    )
+    model = "deepseek-chat",
+    temperature = 0,
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+)
 
 # 1. 设置不同菜系的处理链
 sichuan_prompt = ChatPromptTemplate.from_template(
@@ -27,9 +27,7 @@ general_prompt = ChatPromptTemplate.from_template(
 )
 general_chain = general_prompt | llm | StrOutputParser()
 
-
 # 2. 创建路由链
-# 首先创建一个 classifier_chain，它的任务是读取用户问题，并利用 LLM 的理解能力给问题打上分类标签（例如'川菜', '粤菜', '其他'）。
 classifier_prompt = ChatPromptTemplate.from_template(
     """根据用户问题中提到的菜品，将其分类为：['川菜', '粤菜', 或 '其他']。
     不要解释你的理由，只返回一个单词的分类结果。
@@ -38,22 +36,15 @@ classifier_prompt = ChatPromptTemplate.from_template(
 classifier_chain = classifier_prompt | llm | StrOutputParser()
 
 # 定义路由分支
-# 接着，使用 RunnableBranch 来定义路由规则。它就像一个 if-elif-else 语句，根据输入的 topic 字段来选择执行哪一个处理链(sichuan_chain, cantonese_chain 或 general_chain)
 router_branch = RunnableBranch(
     (lambda x: "川菜" in x["topic"], sichuan_chain),
-    (lambda x: "粤菜" in x["topic"], cantonese_chain),
-    general_chain  # 默认选项
-)
+    (lambda x: "粤菜" in x["topic", cantonese_chain]),
+    general_chain # 默认选项
+) 
 
 # 组合成完整路由链
-'''
-最后，将分类器和路由器分支组合起来。
-这个 full_router_chain 首先会并行执行两个操作: 用 classifier_chain 为问题生成 topic，同时保留原始的 question。
-然后，它将这个包含 topic 和 question 的字典传递给 router_branch，由后者根据 topic 做出最终的路由决策
-'''
 full_router_chain = {"topic": classifier_chain, "question": lambda x: x["question"]} | router_branch
 print("完整的路由链创建成功。\n")
-
 
 # 3. 运行演示查询
 demo_questions = [
@@ -64,8 +55,8 @@ demo_questions = [
 
 for i, item in enumerate(demo_questions, 1):
     question = item["question"]
-    print(f"\n--- 问题 {i}: {question} ---")
-    
+    print(f"\n---问题 {i}: {question} ---")
+
     try:
         # 获取路由决策
         topic = classifier_chain.invoke({"question": question})
@@ -76,4 +67,3 @@ for i, item in enumerate(demo_questions, 1):
         print(f"回答: {result}")
     except Exception as e:
         print(f"执行错误: {e}")
-
